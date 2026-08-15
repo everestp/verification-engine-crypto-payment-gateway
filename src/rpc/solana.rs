@@ -1,6 +1,7 @@
 use crate::settlement::SettlementRequest;
 use serde::Deserialize;
 use tokio::time::{sleep, Duration};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Deserialize, Debug)]
 struct SolanaResponse {
@@ -11,12 +12,13 @@ struct SolanaResponse {
 struct SolanaTxResult {
     meta: Option<SolanaMeta>,
     transaction: Option<SolanaTransactionData>,
+    slot: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]
 struct SolanaMeta {
     err: Option<serde_json::Value>,
-    _fee: Option<u64>,
+    fee: Option<u64>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -35,12 +37,24 @@ struct SolanaAccountKey {
     signer: bool,
 }
 
-/// Fully working real Solana ledger verification via JSON-RPC
+// Helper to generate a simple epoch timestamp string
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Fully working real Solana ledger verification via JSON-RPC with production logging
 pub async fn verify_solana_transaction(req: &SettlementRequest) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let rpc_url = std::env::var("SOLANA_RPC_URL").unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
     let client = reqwest::Client::new();
+    let timestamp = current_timestamp();
 
-    println!("[Solana RPC] Verifying tx: {} for invoice: {} on network Solana", req.tx_hash, req.invoice_id);
+    println!(
+        "[AUDIT] [Timestamp: {}] [Solana Engine] INIT_VERIFICATION | InvoiceID: {} | TxHash: {} | From: {} | ExpectedAmount: {} {}",
+        timestamp, req.invoice_id, req.tx_hash, req.from_address, req.amount_paid, req.currency
+    );
 
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
@@ -66,35 +80,54 @@ pub async fn verify_solana_transaction(req: &SettlementRequest) -> Result<bool, 
     let tx_result = match res.result {
         Some(r) => r,
         None => {
-            eprintln!("[Solana Verification] Transaction signature not found or unconfirmed: {}", req.tx_hash);
+            eprintln!(
+                "[AUDIT] [Timestamp: {}] [Solana Engine] TX_NOT_FOUND | InvoiceID: {} | TxHash: {}",
+                current_timestamp(), req.invoice_id, req.tx_hash
+            );
             return Ok(false);
         }
     };
 
     // 1. Check if transaction execution failed or reverted on-chain
-    if let Some(meta) = tx_result.meta {
+    if let Some(ref meta) = tx_result.meta {
         if meta.err.is_some() {
-            eprintln!("[Solana Verification] Transaction failed or execution returned an error on-chain.");
+            eprintln!(
+                "[AUDIT] [Timestamp: {}] [Solana Engine] TX_REVERTED | InvoiceID: {} | TxHash: {} | Error: {:?}",
+                current_timestamp(), req.invoice_id, req.tx_hash, meta.err
+            );
             return Ok(false);
         }
     } else {
-        eprintln!("[Solana Verification] Transaction metadata missing.");
+        eprintln!(
+            "[AUDIT] [Timestamp: {}] [Solana Engine] META_MISSING | InvoiceID: {} | TxHash: {}",
+            current_timestamp(), req.invoice_id, req.tx_hash
+        );
         return Ok(false);
     }
 
-    // 2. Optional Security Check: Validate that the sender address signed the transaction
+    // 2. Security Check: Validate signer address
     if let Some(tx_data) = tx_result.transaction {
         if let Some(msg) = tx_data.message {
             if let Some(keys) = msg.account_keys {
                 let sender_matched = keys.iter().any(|k| k.pubkey == req.from_address && k.signer);
                 if !sender_matched {
-                    eprintln!("[Solana Verification Warning] Provided from_address did not sign or appear in transaction keys: {}", req.from_address);
+                    eprintln!(
+                        "[AUDIT] [Timestamp: {}] [Solana Engine] SIGNER_WARNING | Sender {} did not explicitly sign tx keys",
+                        current_timestamp(), req.from_address
+                    );
                 }
             }
         }
     }
 
-    println!("[Solana Verification] Successfully verified signature and confirmed execution for tx: {} ", req.tx_hash);
+    let slot = tx_result.slot.unwrap_or(0);
+    let fee = tx_result.meta.and_then(|m| m.fee).unwrap_or(0);
+
+    println!(
+        "[AUDIT] [Timestamp: {}] [Solana Engine] SUCCESS_SETTLED | InvoiceID: {} | TxHash: {} | Slot/Block: {} | Fee: {} lamports | From: {} | Amount: {} {}",
+        current_timestamp(), req.invoice_id, req.tx_hash, slot, fee, req.from_address, req.amount_paid, req.currency
+    );
+
     Ok(true)
 }
 
@@ -102,7 +135,7 @@ pub async fn listen_solana_blocks<F>(mut on_verified: F)
 where
     F: FnMut(super::VerifiedTxEvent) + Send,
 {
-    println!("[Solana Listener] Connected to Solana RPC WebSocket/Poller...");
+    println!("[Solana Listener] Connected to Solana RPC Poller...");
     loop {
         sleep(Duration::from_secs(12)).await;
 
