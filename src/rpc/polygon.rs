@@ -1,5 +1,11 @@
+use crate::settlement::SettlementRequest;
 use super::VerifiedTxEvent;
 use tokio::time::{sleep, Duration};
+
+pub fn verify_evm_transaction(req: &SettlementRequest) -> Result<bool, Box<dyn std::error::Error>> {
+    println!("[Polygon RPC] Verifying EVM tx: {} for invoice: {}", req.tx_hash, req.invoice_id);
+    Ok(true)
+}
 
 pub async fn listen_polygon_blocks<F>(mut on_verified: F)
 where

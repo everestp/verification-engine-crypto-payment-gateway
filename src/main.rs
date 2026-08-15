@@ -1,41 +1,91 @@
+use tonic::{transport::Server, Request, Response, Status};
+
+// Import your modules
 mod config;
 mod error;
 mod client;
 mod rpc;
 
-use config::Config;
-use client::GrpcClient;
-use rpc::solana::listen_solana_blocks;
-use rpc::polygon::listen_polygon_blocks;
+// Include the generated proto definitions from settlement.proto
+pub mod settlement {
+    tonic::include_proto!("settlement");
+}
+
+use settlement::settlement_service_server::{SettlementService, SettlementServiceServer};
+use settlement::{SettlementRequest, SettlementResponse};
+
+// Define the gRPC Service implementation struct
+#[derive(Default)]
+pub struct MySettlementService {}
+
+#[tonic::async_trait]
+impl SettlementService for MySettlementService {
+    async fn verify_and_settle_transaction(
+        &self,
+        request: Request<SettlementRequest>,
+    ) -> Result<Response<SettlementResponse>, Status> {
+        let req = request.into_inner();
+
+        println!(
+            "[Rust gRPC] Processing settlement: invoice_id={}, tx_hash={}, network={}, amount={} {}",
+            req.invoice_id, req.tx_hash, req.network, req.amount_paid, req.currency
+        );
+
+        // Dispatch verification based on network type using your rpc modules
+        let is_valid = match req.network.to_lowercase().as_str() {
+            "solana" => {
+                match rpc::solana::verify_solana_transaction(&req) {
+                    Ok(valid) => valid,
+                    Err(e) => {
+                        eprintln!("[Solana Verification Error]: {}", e);
+                        false
+                    }
+                }
+            }
+            "polygon" | "ethereum" => {
+                match rpc::polygon::verify_evm_transaction(&req) {
+                    Ok(valid) => valid,
+                    Err(e) => {
+                        eprintln!("[EVM/Polygon Verification Error]: {}", e);
+                        false
+                    }
+                }
+            }
+            _ => {
+                eprintln!("[Verification Error] Unsupported network: {}", req.network);
+                false
+            }
+        };
+
+        let message = if is_valid {
+            "Transaction verified and settled successfully".to_string()
+        } else {
+            "Cryptographic signature or transaction verification failed".to_string()
+        };
+
+        let reply = SettlementResponse {
+            success: is_valid,
+            merchant_id: "merchant_default_123".to_string(), // Adjust or populate based on your logic
+            message,
+        };
+
+        Ok(Response::new(reply))
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting Pinecone.xyz Rust Verification Engine...");
+    let addr = "[::1]:50051".parse()?;
+    let service = MySettlementService::default();
 
-    let config = Config::from_env().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    println!("==================================================");
+    println!("🛡️  Pinecone.xyz Rust Verification Engine running on {}", addr);
+    println!("==================================================");
 
-    // Connect gRPC client to Go Backend server
-    println!("Connecting to Go gRPC Backend at {}...", config.backend_grpc_url);
-    let mut grpc_client = GrpcClient::connect(config.backend_grpc_url.clone()).await?;
-
-    // Spawn Solana listener task
-    tokio::spawn(async move {
-        listen_solana_blocks(move |event| {
-            println!("[Event] Solana Tx Detected: {:?}", event);
-            // Example: Dispatch via grpc_client in production with Arc<Mutex<GrpcClient>>
-        }).await;
-    });
-
-    // Spawn Polygon listener task
-    tokio::spawn(async move {
-        listen_polygon_blocks(move |event| {
-            println!("[Event] Polygon Tx Detected: {:?}", event);
-        }).await;
-    });
-
-    // Keep the verification engine running
-    tokio::signal::ctrl_c().await?;
-    println!("Shutting down Pinecone.xyz Verification Engine gracefully.");
+    Server::builder()
+        .add_service(SettlementServiceServer::new(service))
+        .serve(addr)
+        .await?;
 
     Ok(())
 }

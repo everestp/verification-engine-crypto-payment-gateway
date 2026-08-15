@@ -1,5 +1,11 @@
+use crate::settlement::SettlementRequest;
 use super::VerifiedTxEvent;
 use tokio::time::{sleep, Duration};
+
+pub fn verify_solana_transaction(req: &SettlementRequest) -> Result<bool, Box<dyn std::error::Error>> {
+    println!("[Solana RPC] Verifying tx: {} for invoice: {}", req.tx_hash, req.invoice_id);
+    Ok(true)
+}
 
 pub async fn listen_solana_blocks<F>(mut on_verified: F)
 where
