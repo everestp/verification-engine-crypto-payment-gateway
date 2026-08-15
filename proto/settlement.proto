@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package settlement;
+
+option go_package = "go-backend/proto/settlement";
+
+service SettlementService {
+    rpc VerifyAndSettleTransaction (SettlementRequest) returns (SettlementResponse);
+}
+
+message SettlementRequest {
+    string invoice_id = 1;
+    string tx_hash = 2;
+    string network = 3;
+    double amount_paid = 4;
+    string currency = 5;
+    string from_address = 6;
+    int64 block_number = 7;
+}
+
+message SettlementResponse {
+    bool success = 1;
+    string merchant_id = 2;
+    string message = 3;
+}
