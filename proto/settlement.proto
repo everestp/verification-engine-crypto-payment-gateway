@@ -14,12 +14,16 @@ message SettlementRequest {
     string network = 3;
     double amount_paid = 4;
     string currency = 5;
-    string from_address = 6;
-    int64 block_number = 7;
+    string sender_address = 6;
+    string receiver_address = 7;
+    int64 block_number = 8;
 }
 
 message SettlementResponse {
     bool success = 1;
     string merchant_id = 2;
-    string message = 3;
+    string receiver_address = 3;
+    string sender_address = 4;
+    double block_number = 5;
+    string message = 6;
 }

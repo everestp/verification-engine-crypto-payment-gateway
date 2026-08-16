@@ -1,135 +1,34 @@
 use std::env;
-use tonic::{transport::Server, Request, Response, Status};
 
-// Modular structure matching your files
+use tonic::{
+    transport::Server,
+    Request,
+    Response,
+    Status,
+};
+
+// Modular structure
 mod client;
 mod config;
 mod error;
 mod rpc;
 
-// Include the generated proto definitions matching package "settlement"
+// Generated protobuf
 pub mod settlement {
     tonic::include_proto!("settlement");
 }
 
-use settlement::settlement_service_server::{SettlementService, SettlementServiceServer};
-use settlement::{SettlementRequest, SettlementResponse};
+use settlement::{
+    settlement_service_server::{
+        SettlementService,
+        SettlementServiceServer,
+    },
+    SettlementRequest,
+    SettlementResponse,
+};
 
-// EVM JSON-RPC types
-use serde::Deserialize;
-
-#[derive(Deserialize, Debug)]
-struct EvmRpcResponse {
-    result: Option<EvmTransaction>,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct EvmTransaction {
-    from: String,
-    to: Option<String>,
-    value: String, // Hex string of wei
-}
-
-#[derive(Deserialize, Debug)]
-struct EvmReceiptResponse {
-    result: Option<EvmReceipt>,
-}
-
-#[derive(Deserialize, Debug)]
-struct EvmReceipt {
-    status: String, // "0x1" for success
-}
-
-// Define the gRPC Service implementation struct
 #[derive(Default)]
 pub struct MySettlementService {}
-
-impl MySettlementService {
-    /// Real Production EVM Ledger Verification via JSON-RPC HTTP Provider
-    async fn verify_evm_transaction(
-        &self,
-        tx_hash: &str,
-        expected_from: &str,
-        expected_amount_paid: f64,
-        network: &str,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let rpc_url = match network.to_lowercase().as_str() {
-            "polygon" => env::var("POLYGON_RPC_URL").unwrap_or_else(|_| "https://polygon-rpc.com".to_string()),
-            "ethereum" | "evm" => env::var("ETHEREUM_RPC_URL").unwrap_or_else(|_| "https://eth.llamarpc.com".to_string()),
-            _ => {
-                eprintln!("[EVM Verification] Unknown or unsupported EVM network: {}", network);
-                return Ok(false);
-            }
-        };
-
-        let client = reqwest::Client::new();
-
-        // 1. Fetch Transaction by Hash
-        let tx_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_getTransactionByHash",
-            "params": [tx_hash],
-            "id": 1
-        });
-
-        let tx_res = client.post(&rpc_url).json(&tx_payload).send().await?.json::<EvmRpcResponse>().await?;
-
-        let tx = match tx_res.result {
-            Some(t) => t,
-            None => {
-                eprintln!("[EVM Verification] Transaction hash not found or pending on-chain: {}", tx_hash);
-                return Ok(false);
-            }
-        };
-
-        // 2. Cryptographic Sender Address Validation (Fixed typo)
-        if !tx.from.eq_ignore_ascii_case(expected_from) {
-            eprintln!(
-                "[EVM Verification Security Alert] Sender address mismatch! Expected: {}, Found on-chain: {}",
-                expected_from, tx.from
-            );
-            return Ok(false);
-        }
-
-        // 3. Amount Verification
-        let hex_value = tx.value.strip_prefix("0x").unwrap_or(&tx.value);
-        let actual_wei = u128::from_str_radix(hex_value, 16).unwrap_or(0);
-
-        let expected_wei = (expected_amount_paid * 1e18) as u128;
-        if actual_wei < expected_wei {
-            eprintln!(
-                "[EVM Verification] Insufficient value transferred. Expected at least {} wei, got {} wei",
-                expected_wei, actual_wei
-            );
-            return Ok(false);
-        }
-
-        // 4. Check Transaction Execution Receipt Status
-        let receipt_payload = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "eth_getTransactionReceipt",
-            "params": [tx_hash],
-            "id": 1
-        });
-
-        let receipt_res = client.post(&rpc_url).json(&receipt_payload).send().await?.json::<EvmReceiptResponse>().await?;
-
-        if let Some(receipt) = receipt_res.result {
-            let status_hex = receipt.status.strip_prefix("0x").unwrap_or(&receipt.status);
-            let status_code = u64::from_str_radix(status_hex, 16).unwrap_or(0);
-            if status_code != 1 {
-                eprintln!("[EVM Verification] Transaction reverted or failed execution on-chain.");
-                return Ok(false);
-            }
-        } else {
-            eprintln!("[EVM Verification] Transaction receipt not available yet.");
-            return Ok(false);
-        }
-
-        Ok(true)
-    }
-}
 
 #[tonic::async_trait]
 impl SettlementService for MySettlementService {
@@ -140,49 +39,222 @@ impl SettlementService for MySettlementService {
         let req = request.into_inner();
 
         println!(
-            "[Rust gRPC] Executing deep on-chain ledger validation: invoice_id={}, tx_hash={}, network={}, amount_paid={}, from_address={}",
-            req.invoice_id, req.tx_hash, req.network, req.amount_paid, req.from_address
+            "=================================================="
         );
 
-        let verification_result = match req.network.to_lowercase().as_str() {
-            "solana" => {
-                // Call your modularized function inside src/rpc/solana.rs
-                crate::rpc::solana::verify_solana_transaction(&req).await
-            }
-            "ethereum" | "polygon" | "evm" => {
-                self.verify_evm_transaction(&req.tx_hash, &req.from_address, req.amount_paid, &req.network).await
-            }
-            _ => {
-                eprintln!("[Verification Error] Unsupported network type: {}", req.network);
-                Ok(false)
-            }
-        };
+        println!(
+            "[Rust gRPC] Settlement verification started"
+        );
+
+        println!(
+            "[Settlement] Invoice ID : {}",
+            req.invoice_id
+        );
+
+        println!(
+            "[Settlement] TX Hash    : {}",
+            req.tx_hash
+        );
+
+        println!(
+            "[Settlement] Network    : {}",
+            req.network
+        );
+
+        println!(
+            "[Settlement] Currency   : {}",
+            req.currency
+        );
+
+        println!(
+            "[Settlement] Amount     : {}",
+            req.amount_paid
+        );
+
+        println!(
+            "[Settlement] Sender     : {}",
+            req.sender_address
+        );
+
+        println!(
+            "[Settlement] Receiver   : {}",
+            req.receiver_address
+        );
+
+        println!(
+            "[Settlement] Block      : {}",
+            req.block_number
+        );
+
+        // --------------------------------------------------
+        // Basic request validation
+        // --------------------------------------------------
+
+        if req.invoice_id.trim().is_empty() {
+            return Ok(Response::new(SettlementResponse {
+                success: false,
+                merchant_id: String::new(),
+                receiver_address: req.receiver_address,
+                sender_address: req.sender_address,
+                block_number: req.block_number as f64,
+                message: "Invoice ID is required".to_string(),
+            }));
+        }
+
+        if req.tx_hash.trim().is_empty() {
+            return Ok(Response::new(SettlementResponse {
+                success: false,
+                merchant_id: String::new(),
+                receiver_address: req.receiver_address,
+                sender_address: req.sender_address,
+                block_number: req.block_number as f64,
+                message: "Transaction hash is required".to_string(),
+            }));
+        }
+
+        if req.sender_address.trim().is_empty() {
+            return Ok(Response::new(SettlementResponse {
+                success: false,
+                merchant_id: String::new(),
+                receiver_address: req.receiver_address,
+                sender_address: req.sender_address,
+                block_number: req.block_number as f64,
+                message: "Sender address is required".to_string(),
+            }));
+        }
+
+        if req.receiver_address.trim().is_empty() {
+            return Ok(Response::new(SettlementResponse {
+                success: false,
+                merchant_id: String::new(),
+                receiver_address: req.receiver_address,
+                sender_address: req.sender_address,
+                block_number: req.block_number as f64,
+                message: "Receiver address is required".to_string(),
+            }));
+        }
+
+        if req.amount_paid <= 0.0 {
+            return Ok(Response::new(SettlementResponse {
+                success: false,
+                merchant_id: String::new(),
+                receiver_address: req.receiver_address,
+                sender_address: req.sender_address,
+                block_number: req.block_number as f64,
+                message: "Amount must be greater than zero".to_string(),
+            }));
+        }
+
+        // --------------------------------------------------
+        // Blockchain verification
+        // --------------------------------------------------
+
+        let verification_result =
+            match req.network.to_lowercase().as_str() {
+
+                // --------------------------------------------------
+                // Solana
+                // --------------------------------------------------
+
+                "solana" => {
+                    crate::rpc::solana
+                        ::verify_solana_transaction(&req)
+                        .await
+                }
+
+                // --------------------------------------------------
+                // Ethereum / Polygon
+                // --------------------------------------------------
+
+                "ethereum" | "polygon"   => {
+                    crate::rpc::polygon
+                        ::verify_evm_transaction(&req)
+                        .await
+                }
+
+                // --------------------------------------------------
+                // Unsupported network
+                // --------------------------------------------------
+
+                network => {
+                    eprintln!(
+                        "[Settlement] Unsupported network: {}",
+                        network
+                    );
+
+                    Err(
+                        format!(
+                            "Unsupported blockchain network: {}",
+                            network
+                        )
+                        .into()
+                    )
+                }
+            };
+
+        // --------------------------------------------------
+        // Verification result
+        // --------------------------------------------------
 
         let is_valid = match verification_result {
             Ok(valid) => valid,
-            Err(e) => {
-                eprintln!("[Blockchain RPC Network Error]: {}", e);
+
+            Err(error) => {
+                eprintln!(
+                    "[Settlement] Blockchain verification error: {}",
+                    error
+                );
+
                 false
             }
         };
 
+        // --------------------------------------------------
+        // Settlement response
+        // --------------------------------------------------
+
         let message = if is_valid {
-            "On-chain transaction cryptographically verified and successfully settled".to_string()
+            format!(
+                "Transaction verified successfully. {} {} received by the expected receiver.",
+                req.amount_paid,
+                req.currency
+            )
         } else {
-            "On-chain verification failed: Transaction invalid, reverted, or sender/amount mismatch".to_string()
+            "Transaction verification failed: transaction invalid, failed, sender/receiver mismatch, or exact amount mismatch."
+                .to_string()
         };
 
+        // TODO:
+        // Resolve this from your database/service instead
+        // of hardcoding it.
         let merchant_id = if is_valid {
             "merchant_resolved_xyz123".to_string()
         } else {
-            "".to_string()
+            String::new()
         };
 
         let reply = SettlementResponse {
             success: is_valid,
+
             merchant_id,
+
+            receiver_address: req.receiver_address,
+
+            sender_address: req.sender_address,
+
+            block_number: req.block_number as f64,
+
             message,
         };
+
+        println!(
+            "[Settlement] Verification result: {}",
+            is_valid
+        );
+
+        println!(
+            "=================================================="
+        );
 
         Ok(Response::new(reply))
     }
@@ -190,17 +262,64 @@ impl SettlementService for MySettlementService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _ = dotenvy::dotenv();
+    // Load .env
+    dotenvy::dotenv().ok();
 
-    let addr = "[::1]:50051".parse()?;
-    let service = MySettlementService::default();
+    // --------------------------------------------------
+    // gRPC server address
+    // --------------------------------------------------
 
-    println!("==================================================");
-    println!("🛡️  Pinecone.xyz Production Verification Engine active on {}", addr);
-    println!("==================================================");
+    let host =
+        env::var("SETTLEMENT_GRPC_HOST")
+            .unwrap_or_else(|_| "[::1]".to_string());
+
+    let port =
+        env::var("SETTLEMENT_GRPC_PORT")
+            .unwrap_or_else(|_| "50051".to_string());
+
+    let addr =
+        format!("{}:{}", host, port).parse()?;
+
+    // --------------------------------------------------
+    // Service
+    // --------------------------------------------------
+
+    let service =
+        MySettlementService::default();
+
+    println!(
+        "=================================================="
+    );
+
+    println!(
+        "🛡️ Pinecone.xyz Settlement Verification Engine"
+    );
+
+    println!(
+        "🚀 gRPC Server: {}",
+        addr
+    );
+
+    println!(
+        "⛓️ Supported Networks: Solana, Ethereum, Polygon"
+    );
+
+    println!(
+        "💰 Supported Types: Native + ERC20/SPL verification"
+    );
+
+    println!(
+        "=================================================="
+    );
+
+    // --------------------------------------------------
+    // Start server
+    // --------------------------------------------------
 
     Server::builder()
-        .add_service(SettlementServiceServer::new(service))
+        .add_service(
+            SettlementServiceServer::new(service)
+        )
         .serve(addr)
         .await?;
 

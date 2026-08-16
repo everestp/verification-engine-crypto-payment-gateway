@@ -11,8 +11,12 @@ pub struct GrpcClient {
 }
 
 impl GrpcClient {
-    pub async fn connect(endpoint: String) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = SettlementServiceClient::connect(endpoint).await?;
+    pub async fn connect(
+        endpoint: String,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let client =
+            SettlementServiceClient::connect(endpoint).await?;
+
         Ok(Self { client })
     }
 
@@ -23,26 +27,65 @@ impl GrpcClient {
         network: String,
         amount_paid: f64,
         currency: String,
-        from_address: String,
+        sender_address: String,
+        receiver_address: String,
         block_number: i64,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let request = tonic::Request::new(SettlementRequest {
-            invoice_id,
-            tx_hash,
-            network,
-            amount_paid,
-            currency,
-            from_address,
-            block_number,
-        });
 
-        let response = self.client.verify_and_settle_transaction(request).await?;
+        let request = tonic::Request::new(
+            SettlementRequest {
+                invoice_id,
+                tx_hash,
+                network,
+                amount_paid,
+                currency,
+                sender_address,
+                receiver_address,
+                block_number,
+            }
+        );
+
+        let response = self
+            .client
+            .verify_and_settle_transaction(request)
+            .await?;
+
         let inner = response.into_inner();
 
         if inner.success {
-            println!("[gRPC] Settlement successful! Merchant ID: {}", inner.merchant_id);
+            println!(
+                "[gRPC] ✅ Settlement successful!"
+            );
+
+            println!(
+                "[gRPC] Merchant ID: {}",
+                inner.merchant_id
+            );
+
+            println!(
+                "[gRPC] Sender: {}",
+                inner.sender_address
+            );
+
+            println!(
+                "[gRPC] Receiver: {}",
+                inner.receiver_address
+            );
+
+            println!(
+                "[gRPC] Block: {}",
+                inner.block_number
+            );
+
+            println!(
+                "[gRPC] Message: {}",
+                inner.message
+            );
         } else {
-            eprintln!("[gRPC] Settlement rejected: {}", inner.message);
+            eprintln!(
+                "[gRPC] ❌ Settlement rejected: {}",
+                inner.message
+            );
         }
 
         Ok(())
