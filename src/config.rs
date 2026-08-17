@@ -12,7 +12,7 @@ impl Config {
         let backend_grpc_url = env::var("BACKEND_GRPC_URL")
             .unwrap_or_else(|_| "http://[::1]:50051".to_string());
         let solana_rpc_url = env::var("SOLANA_RPC_URL")
-            .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string());
+            .unwrap_or_else(|_| "https://devnet.helius-rpc.com/?api-key=bbb113c7-30a5-4ffc-8325-70b6efa6115e".to_string());
         let polygon_rpc_url = env::var("POLYGON_RPC_URL")
             .unwrap_or_else(|_| "https://polygon-rpc.com".to_string());
 

@@ -140,7 +140,7 @@ pub async fn verify_solana_transaction(
             req.tx_hash,
             {
                 "encoding": "jsonParsed",
-                "commitment": "finalized",
+                "commitment": "confirmed",
                 "maxSupportedTransactionVersion": 0
             }
         ]
