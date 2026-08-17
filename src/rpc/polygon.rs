@@ -44,6 +44,21 @@ struct EvmLog {
 const ERC20_TRANSFER_TOPIC: &str =
     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a3a9c4f9a5";
 
+/// Logs a consistent, single-line failure reason for the audit trail.
+fn log_failure(req: &SettlementRequest, reason: &str, detail: &str) {
+    eprintln!(
+        "[AUDIT] [EVM Engine] VERIFICATION_FAILED \
+        | InvoiceID: {} | TxHash: {} | Network: {} | Currency: {} \
+        | Reason: {} | Detail: {}",
+        req.invoice_id,
+        req.tx_hash,
+        req.network,
+        req.currency,
+        reason,
+        detail
+    );
+}
+
 pub async fn verify_evm_transaction(
     req: &SettlementRequest,
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
@@ -66,47 +81,47 @@ pub async fn verify_evm_transaction(
     if !req.sender_address.starts_with("0x")
         || req.sender_address.len() != 42
     {
-        eprintln!(
-            "[EVM Validation] Invalid sender address: {}",
-            req.sender_address
+        log_failure(
+            req,
+            "INVALID_SENDER_ADDRESS",
+            &format!("sender_address={}", req.sender_address),
         );
-
         return Ok(false);
     }
 
     if !req.receiver_address.starts_with("0x")
         || req.receiver_address.len() != 42
     {
-        eprintln!(
-            "[EVM Validation] Invalid receiver address: {}",
-            req.receiver_address
+        log_failure(
+            req,
+            "INVALID_RECEIVER_ADDRESS",
+            &format!("receiver_address={}", req.receiver_address),
         );
-
         return Ok(false);
     }
 
     if !req.tx_hash.starts_with("0x")
         || req.tx_hash.len() != 66
     {
-        eprintln!(
-            "[EVM Validation] Invalid transaction hash: {}",
-            req.tx_hash
+        log_failure(
+            req,
+            "INVALID_TX_HASH",
+            &format!("tx_hash={}", req.tx_hash),
         );
-
         return Ok(false);
     }
 
     if !req.amount_paid.is_finite() || req.amount_paid <= 0.0 {
-        eprintln!(
-            "[EVM Validation] Invalid amount: {}",
-            req.amount_paid
+        log_failure(
+            req,
+            "INVALID_AMOUNT",
+            &format!("amount_paid={}", req.amount_paid),
         );
-
         return Ok(false);
     }
 
     // --------------------------------------------------
-    // 2. Select RPC
+    // 2. Select RPC (Ethereum + Polygon)
     // --------------------------------------------------
 
     let rpc_url = match req.network.to_lowercase().as_str() {
@@ -125,11 +140,11 @@ pub async fn verify_evm_transaction(
         }
 
         network => {
-            eprintln!(
-                "[EVM Validation] Unsupported network: {}",
-                network
+            log_failure(
+                req,
+                "UNSUPPORTED_NETWORK",
+                &format!("network={}", network),
             );
-
             return Ok(false);
         }
     };
@@ -155,11 +170,11 @@ pub async fn verify_evm_transaction(
         .await?;
 
     if !response.status().is_success() {
-        eprintln!(
-            "[EVM RPC] HTTP error: {}",
-            response.status()
+        log_failure(
+            req,
+            "RPC_HTTP_ERROR",
+            &format!("status={} rpc_url={}", response.status(), rpc_url),
         );
-
         return Ok(false);
     }
 
@@ -169,11 +184,11 @@ pub async fn verify_evm_transaction(
         match serde_json::from_str(&body) {
             Ok(parsed) => parsed,
             Err(e) => {
-                eprintln!(
-                    "[EVM RPC] JSON parse error: {}",
-                    e
+                log_failure(
+                    req,
+                    "TX_JSON_PARSE_ERROR",
+                    &format!("error={}", e),
                 );
-
                 return Ok(false);
             }
         };
@@ -182,11 +197,7 @@ pub async fn verify_evm_transaction(
         Some(tx) => tx,
 
         None => {
-            eprintln!(
-                "[EVM] Transaction not found: {}",
-                req.tx_hash
-            );
-
+            log_failure(req, "TX_NOT_FOUND", "RPC returned null result");
             return Ok(false);
         }
     };
@@ -198,12 +209,15 @@ pub async fn verify_evm_transaction(
     if !tx.from.eq_ignore_ascii_case(
         &req.sender_address
     ) {
-        eprintln!(
-            "[EVM Security] Sender mismatch. Expected={} actual={}",
-            req.sender_address,
-            tx.from
+        log_failure(
+            req,
+            "SENDER_MISMATCH",
+            &format!(
+                "expected_sender={} actual_sender={}",
+                req.sender_address,
+                tx.from
+            ),
         );
-
         return Ok(false);
     }
 
@@ -226,6 +240,11 @@ pub async fn verify_evm_transaction(
         .await?;
 
     if !receipt_response.status().is_success() {
+        log_failure(
+            req,
+            "RECEIPT_HTTP_ERROR",
+            &format!("status={}", receipt_response.status()),
+        );
         return Ok(false);
     }
 
@@ -235,11 +254,11 @@ pub async fn verify_evm_transaction(
         match serde_json::from_str(&receipt_body) {
             Ok(parsed) => parsed,
             Err(e) => {
-                eprintln!(
-                    "[EVM Receipt] JSON parse error: {}",
-                    e
+                log_failure(
+                    req,
+                    "RECEIPT_JSON_PARSE_ERROR",
+                    &format!("error={}", e),
                 );
-
                 return Ok(false);
             }
         };
@@ -248,11 +267,7 @@ pub async fn verify_evm_transaction(
         Some(receipt) => receipt,
 
         None => {
-            eprintln!(
-                "[EVM] Receipt not available yet: {}",
-                req.tx_hash
-            );
-
+            log_failure(req, "RECEIPT_NOT_AVAILABLE", "receipt not mined yet");
             return Ok(false);
         }
     };
@@ -270,10 +285,11 @@ pub async fn verify_evm_transaction(
             .unwrap_or(0);
 
     if status != 1 {
-        eprintln!(
-            "[EVM] Transaction failed/reverted"
+        log_failure(
+            req,
+            "TX_FAILED_ONCHAIN",
+            &format!("status_hex={}", receipt.status),
         );
-
         return Ok(false);
     }
 
@@ -291,10 +307,11 @@ pub async fn verify_evm_transaction(
             Some(to) => to,
 
             None => {
-                eprintln!(
-                    "[EVM] Native transaction has no receiver"
+                log_failure(
+                    req,
+                    "NATIVE_NO_RECEIVER",
+                    "transaction 'to' field was null (likely a contract creation)",
                 );
-
                 return Ok(false);
             }
         };
@@ -302,12 +319,15 @@ pub async fn verify_evm_transaction(
         if !actual_receiver.eq_ignore_ascii_case(
             &req.receiver_address
         ) {
-            eprintln!(
-                "[EVM Security] Receiver mismatch. Expected={} actual={}",
-                req.receiver_address,
-                actual_receiver
+            log_failure(
+                req,
+                "RECEIVER_MISMATCH",
+                &format!(
+                    "expected_receiver={} actual_receiver={}",
+                    req.receiver_address,
+                    actual_receiver
+                ),
             );
-
             return Ok(false);
         }
 
@@ -335,10 +355,15 @@ pub async fn verify_evm_transaction(
 
         // EXACT amount
         if actual_wei != expected_wei {
-            eprintln!(
-                "[EVM Security] Native amount mismatch"
+            log_failure(
+                req,
+                "NATIVE_AMOUNT_MISMATCH",
+                &format!(
+                    "expected_wei={} actual_wei={}",
+                    expected_wei,
+                    actual_wei
+                ),
             );
-
             return Ok(false);
         }
 
@@ -354,11 +379,11 @@ pub async fn verify_evm_transaction(
     // --------------------------------------------------
 
     if currency != "USDT" && currency != "USDC" {
-        eprintln!(
-            "[EVM] Unsupported currency: {}",
-            currency
+        log_failure(
+            req,
+            "UNSUPPORTED_CURRENCY",
+            &format!("currency={}", currency),
         );
-
         return Ok(false);
     }
 
@@ -373,6 +398,9 @@ pub async fn verify_evm_transaction(
     // --------------------------------------------------
     // Search Transfer event
     // --------------------------------------------------
+
+    let mut last_amount_mismatch: Option<(u128, u128)> = None;
+    let mut saw_matching_from_to = false;
 
     for log in &receipt.logs {
 
@@ -390,24 +418,9 @@ pub async fn verify_evm_transaction(
         }
 
         // --------------------------------------------------
-        // topic[1] = from address
-        // topic[2] = to address
+        // topic[1] = from address, topic[2] = to address
         // --------------------------------------------------
 
-        let log_from =
-            format!(
-                "0x{}",
-                &log.topics[1]
-                    .trim_start_matches("0x")
-                    .chars()
-                    .rev()
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>()
-            );
-
-        // Better address extraction:
         let from_topic =
             log.topics[1]
                 .trim_start_matches("0x");
@@ -454,6 +467,8 @@ pub async fn verify_evm_transaction(
             continue;
         }
 
+        saw_matching_from_to = true;
+
         // --------------------------------------------------
         // Decode amount
         // --------------------------------------------------
@@ -482,12 +497,7 @@ pub async fn verify_evm_transaction(
         // --------------------------------------------------
 
         if actual_amount != expected_units {
-            eprintln!(
-                "[EVM ERC20] Amount mismatch. Expected={} actual={}",
-                expected_units,
-                actual_amount
-            );
-
+            last_amount_mismatch = Some((expected_units, actual_amount));
             continue;
         }
 
@@ -525,6 +535,15 @@ pub async fn verify_evm_transaction(
                 &expected_contract
             )
         {
+            log_failure(
+                req,
+                "TOKEN_CONTRACT_MISMATCH",
+                &format!(
+                    "expected_contract={} actual_contract={}",
+                    expected_contract,
+                    log.address
+                ),
+            );
             continue;
         }
 
@@ -536,10 +555,35 @@ pub async fn verify_evm_transaction(
         return Ok(true);
     }
 
-    eprintln!(
-        "[EVM Security] No matching {} Transfer event found",
-        currency
-    );
+    // --------------------------------------------------
+    // No matching/valid Transfer event found — report the
+    // most specific reason we can.
+    // --------------------------------------------------
+
+    if let Some((expected, actual)) = last_amount_mismatch {
+        log_failure(
+            req,
+            "TOKEN_AMOUNT_MISMATCH",
+            &format!("expected_units={} actual_units={}", expected, actual),
+        );
+    } else if saw_matching_from_to {
+        log_failure(
+            req,
+            "TOKEN_TRANSFER_LOG_MALFORMED",
+            "found matching from/to Transfer log but data field was not 32 bytes",
+        );
+    } else {
+        log_failure(
+            req,
+            "NO_MATCHING_TRANSFER_EVENT",
+            &format!(
+                "no {} Transfer log found from={} to={}",
+                currency,
+                req.sender_address,
+                req.receiver_address
+            ),
+        );
+    }
 
     Ok(false)
 }

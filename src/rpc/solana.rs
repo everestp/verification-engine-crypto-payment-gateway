@@ -16,6 +16,7 @@ struct SolanaTxResult {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct SolanaMeta {
     err: Option<serde_json::Value>,
     fee: Option<u64>,
@@ -29,6 +30,7 @@ struct SolanaTransactionData {
 }
 
 #[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct SolanaMessage {
     account_keys: Option<Vec<SolanaAccountKey>>,
 }
@@ -46,6 +48,19 @@ fn current_timestamp() -> u64 {
         .as_secs()
 }
 
+/// Logs a consistent, single-line failure reason for the audit trail.
+fn log_failure(req: &SettlementRequest, reason: &str, detail: &str) {
+    eprintln!(
+        "[AUDIT] [Timestamp: {}] [Solana Engine] VERIFICATION_FAILED \
+        | InvoiceID: {} | TxHash: {} | Reason: {} | Detail: {}",
+        current_timestamp(),
+        req.invoice_id,
+        req.tx_hash,
+        reason,
+        detail
+    );
+}
+
 /// Verify native SOL transaction.
 ///
 /// Checks:
@@ -61,7 +76,7 @@ pub async fn verify_solana_transaction(
 ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let rpc_url = std::env::var("SOLANA_RPC_URL")
         .unwrap_or_else(|_| {
-            "https://api.mainnet-beta.solana.com".to_string()
+            "https://devnet.helius-rpc.com/?api-key=bbb113c7-30a5-4ffc-8325-70b6efa6115e".to_string()
         });
 
     let client = reqwest::Client::new();
@@ -84,11 +99,11 @@ pub async fn verify_solana_transaction(
     // --------------------------------------------------
 
     if req.currency.to_uppercase() != "SOL" {
-        eprintln!(
-            "[Solana Engine] Unsupported currency for native SOL verification: {}",
-            req.currency
+        log_failure(
+            req,
+            "UNSUPPORTED_CURRENCY",
+            &format!("currency={}", req.currency),
         );
-
         return Ok(false);
     }
 
@@ -97,11 +112,11 @@ pub async fn verify_solana_transaction(
     // --------------------------------------------------
 
     if !req.amount_paid.is_finite() || req.amount_paid <= 0.0 {
-        eprintln!(
-            "[Solana Engine] Invalid amount: {}",
-            req.amount_paid
+        log_failure(
+            req,
+            "INVALID_AMOUNT",
+            &format!("amount_paid={}", req.amount_paid),
         );
-
         return Ok(false);
     }
 
@@ -146,17 +161,15 @@ pub async fn verify_solana_transaction(
     let tx_result = match res.result {
         Some(result) => result,
         None => {
-            eprintln!(
-                "[AUDIT] [Timestamp: {}] [Solana Engine] \
-                TX_NOT_FOUND | InvoiceID: {} | TxHash: {}",
-                current_timestamp(),
-                req.invoice_id,
-                req.tx_hash
-            );
-
+            log_failure(req, "TX_NOT_FOUND", "RPC returned null result");
             return Ok(false);
         }
     };
+      println!(
+        "[Solana Engine] Expected amount: {:?} SOL = {} lamports",
+        tx_result,
+        expected_lamports
+    );
 
     // --------------------------------------------------
     // Meta must exist
@@ -165,10 +178,7 @@ pub async fn verify_solana_transaction(
     let meta = match tx_result.meta {
         Some(meta) => meta,
         None => {
-            eprintln!(
-                "[Solana Engine] Transaction metadata missing"
-            );
-
+            log_failure(req, "META_MISSING", "transaction.meta was null");
             return Ok(false);
         }
     };
@@ -178,15 +188,11 @@ pub async fn verify_solana_transaction(
     // --------------------------------------------------
 
     if meta.err.is_some() {
-        eprintln!(
-            "[AUDIT] [Timestamp: {}] [Solana Engine] \
-            TX_FAILED | InvoiceID: {} | TxHash: {} | Error: {:?}",
-            current_timestamp(),
-            req.invoice_id,
-            req.tx_hash,
-            meta.err
+        log_failure(
+            req,
+            "TX_FAILED_ONCHAIN",
+            &format!("{:?}", meta.err),
         );
-
         return Ok(false);
     }
 
@@ -197,10 +203,7 @@ pub async fn verify_solana_transaction(
     let transaction = match tx_result.transaction {
         Some(transaction) => transaction,
         None => {
-            eprintln!(
-                "[Solana Engine] Transaction data missing"
-            );
-
+            log_failure(req, "TRANSACTION_DATA_MISSING", "transaction field was null");
             return Ok(false);
         }
     };
@@ -208,10 +211,7 @@ pub async fn verify_solana_transaction(
     let message = match transaction.message {
         Some(message) => message,
         None => {
-            eprintln!(
-                "[Solana Engine] Transaction message missing"
-            );
-
+            log_failure(req, "MESSAGE_MISSING", "transaction.message was null");
             return Ok(false);
         }
     };
@@ -219,10 +219,7 @@ pub async fn verify_solana_transaction(
     let account_keys = match message.account_keys {
         Some(keys) => keys,
         None => {
-            eprintln!(
-                "[Solana Engine] Account keys missing"
-            );
-
+            log_failure(req, "ACCOUNT_KEYS_MISSING", "message.accountKeys was null");
             return Ok(false);
         }
     };
@@ -240,11 +237,14 @@ pub async fn verify_solana_transaction(
     let sender_index = match sender_index {
         Some(index) => index,
         None => {
-            eprintln!(
-                "[SECURITY] Sender {} did not sign this transaction",
-                req.sender_address
+            log_failure(
+                req,
+                "SENDER_MISMATCH",
+                &format!(
+                    "expected_sender={} did not sign this transaction (or not present)",
+                    req.sender_address
+                ),
             );
-
             return Ok(false);
         }
     };
@@ -258,11 +258,14 @@ pub async fn verify_solana_transaction(
     let receiver_index = match receiver_index {
         Some(index) => index,
         None => {
-            eprintln!(
-                "[SECURITY] Receiver {} not found in transaction",
-                req.receiver_address
+            log_failure(
+                req,
+                "RECEIVER_MISMATCH",
+                &format!(
+                    "expected_receiver={} not found in transaction account keys",
+                    req.receiver_address
+                ),
             );
-
             return Ok(false);
         }
     };
@@ -274,10 +277,7 @@ pub async fn verify_solana_transaction(
     let pre_balances = match meta.pre_balances {
         Some(balances) => balances,
         None => {
-            eprintln!(
-                "[Solana Engine] pre_balances missing"
-            );
-
+            log_failure(req, "PRE_BALANCES_MISSING", "meta.preBalances was null");
             return Ok(false);
         }
     };
@@ -285,10 +285,7 @@ pub async fn verify_solana_transaction(
     let post_balances = match meta.post_balances {
         Some(balances) => balances,
         None => {
-            eprintln!(
-                "[Solana Engine] post_balances missing"
-            );
-
+            log_failure(req, "POST_BALANCES_MISSING", "meta.postBalances was null");
             return Ok(false);
         }
     };
@@ -298,10 +295,17 @@ pub async fn verify_solana_transaction(
         || receiver_index >= pre_balances.len()
         || receiver_index >= post_balances.len()
     {
-        eprintln!(
-            "[Solana Engine] Account balance index out of bounds"
+        log_failure(
+            req,
+            "BALANCE_INDEX_OUT_OF_BOUNDS",
+            &format!(
+                "sender_index={} receiver_index={} pre_len={} post_len={}",
+                sender_index,
+                receiver_index,
+                pre_balances.len(),
+                post_balances.len()
+            ),
         );
-
         return Ok(false);
     }
 
@@ -336,14 +340,15 @@ pub async fn verify_solana_transaction(
     // --------------------------------------------------
 
     if receiver_increase != expected_lamports {
-        eprintln!(
-            "[SECURITY] AMOUNT_MISMATCH \
-            | Expected: {} lamports \
-            | Received: {} lamports",
-            expected_lamports,
-            receiver_increase
+        log_failure(
+            req,
+            "AMOUNT_MISMATCH",
+            &format!(
+                "expected_lamports={} receiver_increase={}",
+                expected_lamports,
+                receiver_increase
+            ),
         );
-
         return Ok(false);
     }
 
@@ -352,14 +357,15 @@ pub async fn verify_solana_transaction(
     // --------------------------------------------------
 
     if sender_decrease < expected_lamports {
-        eprintln!(
-            "[SECURITY] SENDER_AMOUNT_MISMATCH \
-            | Expected: {} lamports \
-            | Sender decreased: {} lamports",
-            expected_lamports,
-            sender_decrease
+        log_failure(
+            req,
+            "SENDER_AMOUNT_MISMATCH",
+            &format!(
+                "expected_lamports={} sender_decrease={}",
+                expected_lamports,
+                sender_decrease
+            ),
         );
-
         return Ok(false);
     }
 
@@ -372,14 +378,15 @@ pub async fn verify_solana_transaction(
     if req.block_number > 0
         && slot != req.block_number as u64
     {
-        eprintln!(
-            "[SECURITY] SLOT_MISMATCH \
-            | Expected: {} \
-            | Actual: {}",
-            req.block_number,
-            slot
+        log_failure(
+            req,
+            "SLOT_MISMATCH",
+            &format!(
+                "expected_slot={} actual_slot={}",
+                req.block_number,
+                slot
+            ),
         );
-
         return Ok(false);
     }
 
