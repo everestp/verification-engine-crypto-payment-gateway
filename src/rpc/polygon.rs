@@ -38,9 +38,7 @@ struct EvmLog {
     data: String,
 }
 
-// keccak256(
-//   "Transfer(address,address,uint256)"
-// )
+// keccak256("Transfer(address,address,uint256)")
 const ERC20_TRANSFER_TOPIC: &str =
     "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a3a9c4f9a5";
 
@@ -77,74 +75,48 @@ pub async fn verify_evm_transaction(
     // --------------------------------------------------
     // 1. Basic validation
     // --------------------------------------------------
-
-    if !req.sender_address.starts_with("0x")
-        || req.sender_address.len() != 42
-    {
-        log_failure(
-            req,
-            "INVALID_SENDER_ADDRESS",
-            &format!("sender_address={}", req.sender_address),
-        );
+    if !req.sender_address.starts_with("0x") || req.sender_address.len() != 42 {
+        log_failure(req, "INVALID_SENDER_ADDRESS", &format!("sender_address={}", req.sender_address));
         return Ok(false);
     }
 
-    if !req.receiver_address.starts_with("0x")
-        || req.receiver_address.len() != 42
-    {
-        log_failure(
-            req,
-            "INVALID_RECEIVER_ADDRESS",
-            &format!("receiver_address={}", req.receiver_address),
-        );
+    if !req.receiver_address.starts_with("0x") || req.receiver_address.len() != 42 {
+        log_failure(req, "INVALID_RECEIVER_ADDRESS", &format!("receiver_address={}", req.receiver_address));
         return Ok(false);
     }
 
-    if !req.tx_hash.starts_with("0x")
-        || req.tx_hash.len() != 66
-    {
-        log_failure(
-            req,
-            "INVALID_TX_HASH",
-            &format!("tx_hash={}", req.tx_hash),
-        );
+    if !req.tx_hash.starts_with("0x") || req.tx_hash.len() != 66 {
+        log_failure(req, "INVALID_TX_HASH", &format!("tx_hash={}", req.tx_hash));
         return Ok(false);
     }
 
     if !req.amount_paid.is_finite() || req.amount_paid <= 0.0 {
-        log_failure(
-            req,
-            "INVALID_AMOUNT",
-            &format!("amount_paid={}", req.amount_paid),
-        );
+        log_failure(req, "INVALID_AMOUNT", &format!("amount_paid={}", req.amount_paid));
         return Ok(false);
     }
 
     // --------------------------------------------------
-    // 2. Select RPC (Ethereum + Polygon)
+    // 2. Select RPC (Ethereum mainnet + Sepolia + Polygon)
     // --------------------------------------------------
-
     let rpc_url = match req.network.to_lowercase().as_str() {
         "ethereum" | "evm" => {
             env::var("ETHEREUM_RPC_URL")
-                .unwrap_or_else(|_| {
-                    "https://eth.llamarpc.com".to_string()
-                })
+                .unwrap_or_else(|_| "https://ethereum-sepolia-rpc.publicnode.com".to_string())
+        }
+
+        // ✅ Sepolia (devnet / testnet)
+        "sepolia" | "ethereum-sepolia" | "eth-sepolia" => {
+            env::var("SEPOLIA_RPC_URL")
+                .unwrap_or_else(|_| "https://ethereum-sepolia-rpc.publicnode.com".to_string())
         }
 
         "polygon" => {
             env::var("POLYGON_RPC_URL")
-                .unwrap_or_else(|_| {
-                    "https://polygon-rpc.com".to_string()
-                })
+                .unwrap_or_else(|_| "https://polygon-rpc.com".to_string())
         }
 
         network => {
-            log_failure(
-                req,
-                "UNSUPPORTED_NETWORK",
-                &format!("network={}", network),
-            );
+            log_failure(req, "UNSUPPORTED_NETWORK", &format!("network={}", network));
             return Ok(false);
         }
     };
@@ -154,7 +126,6 @@ pub async fn verify_evm_transaction(
     // --------------------------------------------------
     // 3. Get transaction
     // --------------------------------------------------
-
     let tx_payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "eth_getTransactionByHash",
@@ -180,22 +151,16 @@ pub async fn verify_evm_transaction(
 
     let body = response.text().await?;
 
-    let tx_res: EvmRpcResponse =
-        match serde_json::from_str(&body) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                log_failure(
-                    req,
-                    "TX_JSON_PARSE_ERROR",
-                    &format!("error={}", e),
-                );
-                return Ok(false);
-            }
-        };
+    let tx_res: EvmRpcResponse = match serde_json::from_str(&body) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            log_failure(req, "TX_JSON_PARSE_ERROR", &format!("error={}", e));
+            return Ok(false);
+        }
+    };
 
     let tx = match tx_res.result {
         Some(tx) => tx,
-
         None => {
             log_failure(req, "TX_NOT_FOUND", "RPC returned null result");
             return Ok(false);
@@ -205,18 +170,11 @@ pub async fn verify_evm_transaction(
     // --------------------------------------------------
     // 4. Verify sender
     // --------------------------------------------------
-
-    if !tx.from.eq_ignore_ascii_case(
-        &req.sender_address
-    ) {
+    if !tx.from.eq_ignore_ascii_case(&req.sender_address) {
         log_failure(
             req,
             "SENDER_MISMATCH",
-            &format!(
-                "expected_sender={} actual_sender={}",
-                req.sender_address,
-                tx.from
-            ),
+            &format!("expected_sender={} actual_sender={}", req.sender_address, tx.from),
         );
         return Ok(false);
     }
@@ -224,7 +182,6 @@ pub async fn verify_evm_transaction(
     // --------------------------------------------------
     // 5. Get receipt
     // --------------------------------------------------
-
     let receipt_payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "eth_getTransactionReceipt",
@@ -250,22 +207,16 @@ pub async fn verify_evm_transaction(
 
     let receipt_body = receipt_response.text().await?;
 
-    let receipt_res: EvmReceiptResponse =
-        match serde_json::from_str(&receipt_body) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                log_failure(
-                    req,
-                    "RECEIPT_JSON_PARSE_ERROR",
-                    &format!("error={}", e),
-                );
-                return Ok(false);
-            }
-        };
+    let receipt_res: EvmReceiptResponse = match serde_json::from_str(&receipt_body) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            log_failure(req, "RECEIPT_JSON_PARSE_ERROR", &format!("error={}", e));
+            return Ok(false);
+        }
+    };
 
     let receipt = match receipt_res.result {
         Some(receipt) => receipt,
-
         None => {
             log_failure(req, "RECEIPT_NOT_AVAILABLE", "receipt not mined yet");
             return Ok(false);
@@ -275,37 +226,22 @@ pub async fn verify_evm_transaction(
     // --------------------------------------------------
     // 6. Transaction must succeed
     // --------------------------------------------------
-
-    let status_hex =
-        receipt.status.strip_prefix("0x")
-            .unwrap_or(&receipt.status);
-
-    let status =
-        u64::from_str_radix(status_hex, 16)
-            .unwrap_or(0);
+    let status_hex = receipt.status.strip_prefix("0x").unwrap_or(&receipt.status);
+    let status = u64::from_str_radix(status_hex, 16).unwrap_or(0);
 
     if status != 1 {
-        log_failure(
-            req,
-            "TX_FAILED_ONCHAIN",
-            &format!("status_hex={}", receipt.status),
-        );
+        log_failure(req, "TX_FAILED_ONCHAIN", &format!("status_hex={}", receipt.status));
         return Ok(false);
     }
 
     // --------------------------------------------------
-    // 7. Native ETH / MATIC
+    // 7. Native ETH / MATIC (works on Sepolia too)
     // --------------------------------------------------
-
     let currency = req.currency.to_uppercase();
 
     if currency == "ETH" || currency == "MATIC" {
-
-        // Native transaction must go directly
-        // to the expected receiver.
         let actual_receiver = match tx.to {
             Some(to) => to,
-
             None => {
                 log_failure(
                     req,
@@ -316,249 +252,126 @@ pub async fn verify_evm_transaction(
             }
         };
 
-        if !actual_receiver.eq_ignore_ascii_case(
-            &req.receiver_address
-        ) {
+        if !actual_receiver.eq_ignore_ascii_case(&req.receiver_address) {
             log_failure(
                 req,
                 "RECEIVER_MISMATCH",
                 &format!(
                     "expected_receiver={} actual_receiver={}",
-                    req.receiver_address,
-                    actual_receiver
+                    req.receiver_address, actual_receiver
                 ),
             );
             return Ok(false);
         }
 
-        // --------------------------------------------------
-        // Native amount
-        // --------------------------------------------------
+        let value_hex = tx.value.strip_prefix("0x").unwrap_or(&tx.value);
+        let actual_wei = u128::from_str_radix(value_hex, 16).unwrap_or(0);
 
-        let value_hex =
-            tx.value.strip_prefix("0x")
-                .unwrap_or(&tx.value);
+        let expected_wei = (req.amount_paid * 1_000_000_000_000_000_000.0).round() as u128;
 
-        let actual_wei =
-            u128::from_str_radix(value_hex, 16)
-                .unwrap_or(0);
+        println!("[EVM] Native expected={} wei actual={} wei", expected_wei, actual_wei);
 
-        let expected_wei =
-            (req.amount_paid * 1_000_000_000_000_000_000.0)
-                .round() as u128;
-
-        println!(
-            "[EVM] Native expected={} wei actual={} wei",
-            expected_wei,
-            actual_wei
-        );
-
-        // EXACT amount
         if actual_wei != expected_wei {
             log_failure(
                 req,
                 "NATIVE_AMOUNT_MISMATCH",
-                &format!(
-                    "expected_wei={} actual_wei={}",
-                    expected_wei,
-                    actual_wei
-                ),
+                &format!("expected_wei={} actual_wei={}", expected_wei, actual_wei),
             );
             return Ok(false);
         }
 
-        println!(
-            "[EVM] ✅ Native transaction verified"
-        );
-
+        println!("[EVM] ✅ Native transaction verified");
         return Ok(true);
     }
 
     // --------------------------------------------------
-    // 8. ERC20 USDT / USDC
+    // 8. ERC20 USDT / USDC (mainnet + polygon only for now)
     // --------------------------------------------------
-
     if currency != "USDT" && currency != "USDC" {
-        log_failure(
-            req,
-            "UNSUPPORTED_CURRENCY",
-            &format!("currency={}", currency),
-        );
+        log_failure(req, "UNSUPPORTED_CURRENCY", &format!("currency={}", currency));
         return Ok(false);
     }
 
-    // --------------------------------------------------
-    // Expected token decimals
-    // --------------------------------------------------
-
-    let expected_units =
-        (req.amount_paid * 1_000_000.0)
-            .round() as u128;
-
-    // --------------------------------------------------
-    // Search Transfer event
-    // --------------------------------------------------
+    let expected_units = (req.amount_paid * 1_000_000.0).round() as u128;
 
     let mut last_amount_mismatch: Option<(u128, u128)> = None;
     let mut saw_matching_from_to = false;
 
     for log in &receipt.logs {
-
-        // Transfer event
         if log.topics.len() != 3 {
             continue;
         }
 
-        if !log.topics[0]
-            .eq_ignore_ascii_case(
-                ERC20_TRANSFER_TOPIC
-            )
-        {
+        if !log.topics[0].eq_ignore_ascii_case(ERC20_TRANSFER_TOPIC) {
             continue;
         }
 
-        // --------------------------------------------------
-        // topic[1] = from address, topic[2] = to address
-        // --------------------------------------------------
+        let from_topic = log.topics[1].trim_start_matches("0x");
+        let to_topic = log.topics[2].trim_start_matches("0x");
 
-        let from_topic =
-            log.topics[1]
-                .trim_start_matches("0x");
-
-        let to_topic =
-            log.topics[2]
-                .trim_start_matches("0x");
-
-        if from_topic.len() < 40
-            || to_topic.len() < 40
-        {
+        if from_topic.len() < 40 || to_topic.len() < 40 {
             continue;
         }
 
-        let actual_from =
-            format!(
-                "0x{}",
-                &from_topic[from_topic.len() - 40..]
-            );
+        let actual_from = format!("0x{}", &from_topic[from_topic.len() - 40..]);
+        let actual_to = format!("0x{}", &to_topic[to_topic.len() - 40..]);
 
-        let actual_to =
-            format!(
-                "0x{}",
-                &to_topic[to_topic.len() - 40..]
-            );
-
-        // --------------------------------------------------
-        // Verify sender
-        // --------------------------------------------------
-
-        if !actual_from.eq_ignore_ascii_case(
-            &req.sender_address
-        ) {
+        if !actual_from.eq_ignore_ascii_case(&req.sender_address) {
             continue;
         }
 
-        // --------------------------------------------------
-        // Verify receiver
-        // --------------------------------------------------
-
-        if !actual_to.eq_ignore_ascii_case(
-            &req.receiver_address
-        ) {
+        if !actual_to.eq_ignore_ascii_case(&req.receiver_address) {
             continue;
         }
 
         saw_matching_from_to = true;
 
-        // --------------------------------------------------
-        // Decode amount
-        // --------------------------------------------------
-
-        let data =
-            log.data.trim_start_matches("0x");
-
+        let data = log.data.trim_start_matches("0x");
         if data.len() != 64 {
             continue;
         }
 
-        let actual_amount =
-            u128::from_str_radix(data, 16)
-                .unwrap_or(0);
+        let actual_amount = u128::from_str_radix(data, 16).unwrap_or(0);
 
         println!(
             "[EVM ERC20] Token={} From={} To={} Amount={}",
-            log.address,
-            actual_from,
-            actual_to,
-            actual_amount
+            log.address, actual_from, actual_to, actual_amount
         );
-
-        // --------------------------------------------------
-        // EXACT amount
-        // --------------------------------------------------
 
         if actual_amount != expected_units {
             last_amount_mismatch = Some((expected_units, actual_amount));
             continue;
         }
 
-        // --------------------------------------------------
-        // Verify correct token contract
-        // --------------------------------------------------
-
-        let expected_contract =
-            match (
-                req.network.to_lowercase().as_str(),
-                currency.as_str(),
-            ) {
-
-                ("ethereum", "USDT") =>
-                    env::var("ETHEREUM_USDT_CONTRACT")
-                        .unwrap_or_default(),
-
-                ("ethereum", "USDC") =>
-                    env::var("ETHEREUM_USDC_CONTRACT")
-                        .unwrap_or_default(),
-
-                ("polygon", "USDT") =>
-                    env::var("POLYGON_USDT_CONTRACT")
-                        .unwrap_or_default(),
-
-                ("polygon", "USDC") =>
-                    env::var("POLYGON_USDC_CONTRACT")
-                        .unwrap_or_default(),
-
-                _ => String::new(),
-            };
+        let expected_contract = match (
+            req.network.to_lowercase().as_str(),
+            currency.as_str(),
+        ) {
+            ("ethereum", "USDT") => env::var("ETHEREUM_USDT_CONTRACT").unwrap_or_default(),
+            ("ethereum", "USDC") => env::var("ETHEREUM_USDC_CONTRACT").unwrap_or_default(),
+            ("polygon", "USDT") => env::var("POLYGON_USDT_CONTRACT").unwrap_or_default(),
+            ("polygon", "USDC") => env::var("POLYGON_USDC_CONTRACT").unwrap_or_default(),
+            // Add Sepolia contracts here later if you need them
+            _ => String::new(),
+        };
 
         if !expected_contract.is_empty()
-            && !log.address.eq_ignore_ascii_case(
-                &expected_contract
-            )
+            && !log.address.eq_ignore_ascii_case(&expected_contract)
         {
             log_failure(
                 req,
                 "TOKEN_CONTRACT_MISMATCH",
                 &format!(
                     "expected_contract={} actual_contract={}",
-                    expected_contract,
-                    log.address
+                    expected_contract, log.address
                 ),
             );
             continue;
         }
 
-        println!(
-            "[EVM] ✅ ERC20 {} transaction verified",
-            currency
-        );
-
+        println!("[EVM] ✅ ERC20 {} transaction verified", currency);
         return Ok(true);
     }
-
-    // --------------------------------------------------
-    // No matching/valid Transfer event found — report the
-    // most specific reason we can.
-    // --------------------------------------------------
 
     if let Some((expected, actual)) = last_amount_mismatch {
         log_failure(
@@ -578,9 +391,7 @@ pub async fn verify_evm_transaction(
             "NO_MATCHING_TRANSFER_EVENT",
             &format!(
                 "no {} Transfer log found from={} to={}",
-                currency,
-                req.sender_address,
-                req.receiver_address
+                currency, req.sender_address, req.receiver_address
             ),
         );
     }
