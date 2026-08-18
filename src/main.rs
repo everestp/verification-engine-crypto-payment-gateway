@@ -318,9 +318,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --------------------------------------------------
     // gRPC server address
     // --------------------------------------------------
+    //
+    // IMPORTANT:
+    // Use 0.0.0.0 inside Docker so the gRPC server
+    // accepts connections from outside the container.
+    //
+    // You can override these with:
+    // SETTLEMENT_GRPC_HOST
+    // SETTLEMENT_GRPC_PORT
+    //
+    let host = env::var("SETTLEMENT_GRPC_HOST")
+        .unwrap_or_else(|_| "0.0.0.0".to_string());
 
-    let host = env::var("SETTLEMENT_GRPC_HOST").unwrap_or_else(|_| "[::1]".to_string());
-    let port = env::var("SETTLEMENT_GRPC_PORT").unwrap_or_else(|_| "50051".to_string());
+    let port = env::var("SETTLEMENT_GRPC_PORT")
+        .unwrap_or_else(|_| "50051".to_string());
+
     let addr = format!("{}:{}", host, port).parse()?;
 
     // --------------------------------------------------
@@ -329,16 +341,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let service = MySettlementService::default();
 
-    // Print the networks we actually have verifiers for, instead
-    // of a hardcoded string — this list now updates itself as
-    // networks are added to build_verifier_registry().
-    let mut supported_networks: Vec<&str> = service.verifiers.keys().copied().collect();
+    // Print the networks we actually have verifiers for
+    let mut supported_networks: Vec<&str> =
+        service.verifiers.keys().copied().collect();
+
     supported_networks.sort();
 
     println!("==================================================");
     println!("🛡️ Pinecone.xyz Settlement Verification Engine");
     println!("🚀 gRPC Server: {}", addr);
-    println!("⛓️ Supported Networks: {}", supported_networks.join(", "));
+    println!(
+        "⛓️ Supported Networks: {}",
+        supported_networks.join(", ")
+    );
     println!("💰 Supported Types: Native + ERC20/SPL verification");
     println!("==================================================");
 
